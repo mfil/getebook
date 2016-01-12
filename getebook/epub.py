@@ -559,7 +559,7 @@ class EpubBuilder:
         be added to the archive under its basename; the argument
         "arcname" can be used to specify a different name.'''
         if not arcname:
-            arcname = os.path.basename(filename)
+            arcname = os.path.basename(name)
         self.opf.filelist.append(_Fileinfo(arcname, in_spine, guide_title,
                                  guide_type))
         self.epub_f.write(name, arcname)
