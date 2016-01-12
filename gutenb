@@ -29,36 +29,62 @@ import warnings
 
 class GutenbEbookParser(getebook.EbookParser):
     'EbookParser initialized for gutenberg.spiegel.de.'
-    base = 'http://gutenberg.spiegel.de'
     def __init__(self, builder):
         '''Initialize the parser instance. Adds some quirks specific to
         gutenberg.spiegel.de.'''
-        super().__init__(builder, '^Kapitel [0-9]* >>$', 'div', None, 'gutenb')
-        self.quirks.skip('h*', ['author', 'title', 'subtitle'], None)
-        self.quirks.skip('h*', None, None, '^Roman$')
+        super().__init__(builder,
+                         link_next='^Kapitel [0-9]* >>$',
+                         root_tag='div',
+                         root_id='gutenb'
+                         )
+        # quirks.skip is used to tell the parser that some elements are
+        # not supposed to appear in the output. In this case, headings
+        # with class "author", "title" and "subtitle" should be skipped
+        # since the EpuBuilder makes its own titlepage.
+        self.quirks.skip(tag='h*',
+                         class_val=['author', 'title', 'subtitle'],
+                         id_val=None
+                         )
+        self.quirks.skip('h*', class_val=None, id_val=None, text_re='^Roman$')
+        # quirks.par_heading informs the parser that some html inside
+        # <p> tags is (part of) a chapter heading. Below, we tell the
+        # parser that, e.g., <p class="centerbig">1. Kapitel</p> should
+        # be treated as a heading.
         self.quirks.par_heading('centerbig', None, '^[0-9]*\. Kapitel$')
-        # There are probably more quirks, but these are the ones I found
-        # so far.
+        # There are probably many more quirks, but these are the ones I
+        # found so far.
 
+    # Since all books we parse here are from Projekt Gutenberg-DE, we
+    # can simplify the arguments to getebook().
     def getebook(self, url):
         '''Parse the html from url, and keep following the link to the
         next part of the book.'''
-        if url.startswith(self.base):
-            path = url[len(self.base):]
-        super().getebook('', path)
+        base = 'http://gutenberg.spiegel.de'
+        if url.startswith(base):
+            path = url[len(base):]
+        super().getebook(base, path)
 
 class MetadataError(Exception):
     pass
 
+# The GutenbMetaParser has no relation with the EbookParser class.
 class GutenbMetaParser(html.parser.HTMLParser):
-    '''Extract author and title. This informatin is usually given on the
-    first page of the ebook, but sometimes it is missing.'''
+    '''Extract author and title. This information is usually given on the
+    first page of the book, but sometimes it is missing.'''
     title = None
     main_title = None
     subtitle = None
     author = None
-    def __init__(self):
-        '''Initialize the parser.'''
+    def __init__(self, author, main_title, subtitle):
+        '''Initialize the parser. If author, title, or subtitle are
+        already known, they can be supplied here, otherwise the
+        arguments should be set to None.'''
+        if author:
+            self.meta['author'] = author
+        if main_title:
+            self.meta['title'] = main_title
+        if subtitle:
+            self.meta['subtitle'] = subtitle
         self.key = None
         self.meta = {}
         super().__init__(convert_charrefs = True)
@@ -73,8 +99,13 @@ class GutenbMetaParser(html.parser.HTMLParser):
             self.key = 'subtitle'
         elif tag == 'br' and self.key:
             self.meta[self.key] += '. '
+        # If we already know title, subtitle or author, set key = None.
+        if self.key in self.meta:
+            self.key = None
 
     def handle_data(self, data):
+        'Handle data.'
+        # Strip whitespace around lines.'
         if self.key:
             text = ' '.join([l.strip() for l in data.splitlines() \
                                        if len(l) > 0 and not l.isspace()])
@@ -91,15 +122,17 @@ class GutenbMetaParser(html.parser.HTMLParser):
         elif tag == 'h4' and self.key == 'subtitle':
             self.key == None
 
+# Use argparse to process command line arguments and display usage
+# information.
 argp = argparse.ArgumentParser(description = (
-  'Download an ebook from gutenberg.spiegel.de and convert it to an\n'
+  'Download a book from Projekt Gutenberg-DE and convert it to an\n'
   'epub file. The first argument is the url to the book, and the  second\n'
   'one is the name of the output file.\n'
   ),
   epilog = (
   'If no author, title, and/or subtitle are given, the program tries to\n'
-  'extract that information from the ebook. If both author and title are\n'
-  'given, the ebook will NOT be checked for a subtitle.'
+  'extract that information from the book. Currently, this only works if\n'
+  'this information appears in the main text.'
   ))
 argp.add_argument('-a', '--author', help = 'Name of the author')
 argp.add_argument('-t', '--title', help = 'Title of the book')
@@ -111,57 +144,33 @@ args = argp.parse_args()
 if not args.url.startswith('http://gutenberg.spiegel.de'):
     args.url = urllib.parse.urljoin('http://gutenberg.spiegel.de', args.url)
 
+# Get metadata.
+meta_p = GutenbMetaParser(args.author, args.title, args.subtitle)
 if not (args.author and args.title):
-    # No author and title given by the user.
     # We need to use GutenbMetaParser to look for metadata in the book.
     r = requests.get(args.url)
     if not r:
         raise getebook.PageNotFound('Got error code %03d' % r.get)
-    # gutenberg.spiegel.de has metadata on the first page.
     first_page = r.text
-    meta_p = GutenbMetaParser()
     meta_p.feed(first_page)
     meta_p.close()
-    # Assign title and author variables. User-supplied values take
-    # precedence.
-    if args.title:
-        main_title = args.title
-        title = args.title
-    else:
-        try:
-            main_title = meta_p.meta['title']
-        except KeyError:
-            raise MetadataError('failed to find the title')
-        title = main_title
-    if args.subtitle:
-        subtitle = args.subtitle
-        title += '. ' + args.subtitle
-    else:
-        try:
-            subtitle = meta_p.meta['subtitle']
-        except KeyError:
-            pass
-        else:
-            title += '. ' + meta_p.subtitle
-    if args.author:
-        author = args.author
-    else:
-        try:
-            author = meta_p.meta['author']
-        except KeyError:
-            warnings.warn('failed to find the author of the book')
-            author = None
-else:
-    # We have author and title
-    main_title = args.title
-    title = args.title
-    author = args.author
-    # Assign subtitle variable
-    if args.subtitle:
-        subtitle = args.subtitle
-        title += '. ' + args.subtitle
+try:
+    main_title = meta_p.meta['title']
+    title = main_title
+except KeyError:
+    raise MetadataError('Failed to find the book title.')
+try:
+    author = meta_p.meta['author']
+except KeyError:
+    raise MetadataError('Failed to find the author.')
+try:
+    subtitle = meta_p.meta['subtitle']
+    title += '. ' + subtitle
+except KeyError:
+    pass
 
 with getebook.epub.EpubBuilder(args.filename) as bld:
+    # Add css for some classes that appear in the html.
     bld.style_css += (
       '.center, .motto, .abstract {\n'
       '  text-align: center;\n'
@@ -172,6 +181,10 @@ with getebook.epub.EpubBuilder(args.filename) as bld:
       '}\n'
     )
     bld.title = title
+    # Assign an UID for the EPUB. The EPUB specification requires that
+    # every book is assigned a unique identifier. If this is skipped,
+    # the builder creates a pseudo-random UID that is extremely unlikely
+    # to collide with any existing book.
     tr_table = {ord(' '): '-', ord('.'): None}
     bld.uid = 'getebook-gutenb-' + title.lower().translate(tr_table)
     bld.lang = 'de'
@@ -180,8 +193,14 @@ with getebook.epub.EpubBuilder(args.filename) as bld:
     try:
         bld.titlepage(main_title, subtitle)
     except NameError:
-        # There is no subtitle
+        # There is no subtitle.
+        # Without arguments, titlepage() takes the builder's title
+        # attribute for the main title, and no subtitle.
         bld.titlepage()
+    # bld.insert_file() includes an external file in the epub. We use it
+    # here to add a page about the copyright; in_spine tells the builder
+    # that the page is part of the reading order.
+    bld.insert_file('gutenb-copyright.html', in_spine = True)
     p = GutenbEbookParser(bld)
     p.getebook(args.url)
     p.close()
