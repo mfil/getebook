@@ -1,0 +1,187 @@
+#!/usr/bin/env python
+
+# Copyright (c) 2016, Max Fillinger <max@max-fillinger.net>
+# 
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+# REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+# AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+# INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+# LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+# OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+# PERFORMANCE OF THIS SOFTWARE.
+
+import argparse
+import getebook
+import getebook.epub
+import html
+import html.parser
+import requests
+import urllib.parse
+import warnings
+
+# Since all the books on gutenberg.spiegel.de are in German it might be
+# a bit silly to write everything here in English, but that way it can
+# also work as an extended example for how to use the getebook package.
+
+class GutenbEbookParser(getebook.EbookParser):
+    'EbookParser initialized for gutenberg.spiegel.de.'
+    base = 'http://gutenberg.spiegel.de'
+    def __init__(self, builder):
+        '''Initialize the parser instance. Adds some quirks specific to
+        gutenberg.spiegel.de.'''
+        super().__init__(builder, '^Kapitel [0-9]* >>$', 'div', None, 'gutenb')
+        self.quirks.skip('h*', ['author', 'title', 'subtitle'], None)
+        self.quirks.skip('h*', None, None, '^Roman$')
+        self.quirks.par_heading('centerbig', None, '^[0-9]*\. Kapitel$')
+        # There are probably more quirks, but these are the ones I found
+        # so far.
+
+    def getebook(self, url):
+        '''Parse the html from url, and keep following the link to the
+        next part of the book.'''
+        if url.startswith(self.base):
+            path = url[len(self.base):]
+        super().getebook('', path)
+
+class MetadataError(Exception):
+    pass
+
+class GutenbMetaParser(html.parser.HTMLParser):
+    '''Extract author and title. This informatin is usually given on the
+    first page of the ebook, but sometimes it is missing.'''
+    title = None
+    main_title = None
+    subtitle = None
+    author = None
+    def __init__(self):
+        '''Initialize the parser.'''
+        self.key = None
+        self.meta = {}
+        super().__init__(convert_charrefs = True)
+
+    def handle_starttag(self, tag, attr):
+        'Handle starttag.'
+        if tag == 'h2' and ('class', 'title') in attr:
+            self.key = 'title'
+        elif tag == 'h3' and ('class', 'author') in attr:
+            self.key = 'author'
+        elif tag == 'h4' and ('class', 'subtitle') in attr:
+            self.key = 'subtitle'
+        elif tag == 'br' and self.key:
+            self.meta[self.key] += '. '
+
+    def handle_data(self, data):
+        if self.key:
+            text = ' '.join([l.strip() for l in data.splitlines() \
+                                       if len(l) > 0 and not l.isspace()])
+            try:
+                self.meta[self.key] += text
+            except KeyError:
+                self.meta[self.key] = text
+
+    def handle_endtag(self, tag):
+        if tag == 'h2' and self.key == 'title':
+            self.key = None
+        elif tag == 'h3' and self.key == 'author':
+            self.key = None
+        elif tag == 'h4' and self.key == 'subtitle':
+            self.key == None
+
+argp = argparse.ArgumentParser(description = (
+  'Download an ebook from gutenberg.spiegel.de and convert it to an\n'
+  'epub file. The first argument is the url to the book, and the  second\n'
+  'one is the name of the output file.\n'
+  ),
+  epilog = (
+  'If no author, title, and/or subtitle are given, the program tries to\n'
+  'extract that information from the ebook. If both author and title are\n'
+  'given, the ebook will NOT be checked for a subtitle.'
+  ))
+argp.add_argument('-a', '--author', help = 'Name of the author')
+argp.add_argument('-t', '--title', help = 'Title of the book')
+argp.add_argument('-s', '--subtitle', help = 'Subtitle of the book')
+argp.add_argument('url')
+argp.add_argument('filename')
+args = argp.parse_args()
+
+if not args.url.startswith('http://gutenberg.spiegel.de'):
+    args.url = urllib.parse.urljoin('http://gutenberg.spiegel.de', args.url)
+
+if not (args.author and args.title):
+    # No author and title given by the user.
+    # We need to use GutenbMetaParser to look for metadata in the book.
+    r = requests.get(args.url)
+    if not r:
+        raise getebook.PageNotFound('Got error code %03d' % r.get)
+    # gutenberg.spiegel.de has metadata on the first page.
+    first_page = r.text
+    meta_p = GutenbMetaParser()
+    meta_p.feed(first_page)
+    meta_p.close()
+    # Assign title and author variables. User-supplied values take
+    # precedence.
+    if args.title:
+        main_title = args.title
+        title = args.title
+    else:
+        try:
+            main_title = meta_p.meta['title']
+        except KeyError:
+            raise MetadataError('failed to find the title')
+        title = main_title
+    if args.subtitle:
+        subtitle = args.subtitle
+        title += '. ' + args.subtitle
+    else:
+        try:
+            subtitle = meta_p.meta['subtitle']
+        except KeyError:
+            pass
+        else:
+            title += '. ' + meta_p.subtitle
+    if args.author:
+        author = args.author
+    else:
+        try:
+            author = meta_p.meta['author']
+        except KeyError:
+            warnings.warn('failed to find the author of the book')
+            author = None
+else:
+    # We have author and title
+    main_title = args.title
+    title = args.title
+    author = args.author
+    # Assign subtitle variable
+    if args.subtitle:
+        subtitle = args.subtitle
+        title += '. ' + args.subtitle
+
+with getebook.epub.EpubBuilder(args.filename) as bld:
+    bld.style_css += (
+      '.center, .motto, .abstract {\n'
+      '  text-align: center;\n'
+      '}\n'
+      '.centerbig {\n'
+      '  text-align: center;\n'
+      '  font-size: 120%;\n'
+      '}\n'
+    )
+    bld.title = title
+    tr_table = {ord(' '): '-', ord('.'): None}
+    bld.uid = 'getebook-gutenb-' + title.lower().translate(tr_table)
+    bld.lang = 'de'
+    if author:
+        bld.author = author
+    try:
+        bld.titlepage(main_title, subtitle)
+    except NameError:
+        # There is no subtitle
+        bld.titlepage()
+    p = GutenbEbookParser(bld)
+    p.getebook(args.url)
+    p.close()
