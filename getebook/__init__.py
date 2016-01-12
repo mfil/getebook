@@ -18,27 +18,14 @@ output format.
 
 Example:
 
-How to get Kafka\'s ``Der Prozess\'\' from gutenberg.spiegel.de
-
 >>> import getebook
 >>> import getebook.epub
-
-First, create an ebook builder object and enter the metadata:
-
 >>> builder = getebook.epub.EpubBuilder(\'out.epub\')
->>> builder.title = \'Der Prozess\'
->>> builder.author = \'Franz Kafka\'
->>> builder.lang = \'de\'
+>>> builder.title = \'Some Book\'
+>>> builder.author = \'Alice Author\'
 >>> builder.titlepage()
-
-Create an EbookParser instance, hand it the builder object, describe the
-element holding the book content and what the link to the next page of
-the book looks like. Then, just point it to the first page of the book.
-
->>> p = getebook.EbookParser(builder, link_next=\'Kapitel [0-9]*\',
-...                          root_tag=\'div\',
-...                          root_class=\'gutenb\')
->>> p.getebook(\'http://gutenberg.spiegel.de\', \'buch/der-prozess-157/2\')
+>>> p = getebook.EbookParser(builder, link_next=\'Next Page >>\')
+>>> p.getebook(\'http://www.ebook-site.org\', \'some-book/1\')
 >>> builder.finalize()'''
 
 import html
