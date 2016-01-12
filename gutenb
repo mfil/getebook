@@ -79,6 +79,7 @@ class GutenbMetaParser(html.parser.HTMLParser):
         '''Initialize the parser. If author, title, or subtitle are
         already known, they can be supplied here, otherwise the
         arguments should be set to None.'''
+        self.meta = {}
         if author:
             self.meta['author'] = author
         if main_title:
@@ -86,7 +87,6 @@ class GutenbMetaParser(html.parser.HTMLParser):
         if subtitle:
             self.meta['subtitle'] = subtitle
         self.key = None
-        self.meta = {}
         super().__init__(convert_charrefs = True)
 
     def handle_starttag(self, tag, attr):
