@@ -188,8 +188,7 @@ with getebook.epub.EpubBuilder(args.filename) as bld:
     tr_table = {ord(' '): '-', ord('.'): None}
     bld.uid = 'getebook-gutenb-' + title.lower().translate(tr_table)
     bld.lang = 'de'
-    if author:
-        bld.author = author
+    bld.author = author
     try:
         bld.titlepage(main_title, subtitle)
     except NameError:
